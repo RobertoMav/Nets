@@ -231,7 +231,8 @@ def receive_token(is_regenerated=False):
         if random.random() < 0.1:  # 10% chance of fault
             if dest_nick == BROADCAST_NICKNAME:
                 print_log(
-                    "Fault Injection: Ensuring 'naoexiste' for broadcast (no data corruption needed as per rule)."
+                    "Fault Injection: Ensuring 'naoexiste' for broadcast "
+                    "(no data corruption needed as per rule)."
                 )
                 # The status is already naoexiste for new messages.
             else:  # Unicast fault
@@ -243,7 +244,9 @@ def receive_token(is_regenerated=False):
                     + msg_content[faulty_char_index + 1 :]
                 )
                 print_log(
-                    f"Fault Injection: Corrupted message for {dest_nick}. Original: '{msg_content[:30]}...', Faulty: '{message_to_send_after_fault_injection[:30]}...'"
+                    f"Fault Injection: Corrupted message for {dest_nick}. "
+                    f"Original: '{msg_content[:30]}...', "
+                    f"Faulty: '{message_to_send_after_fault_injection[:30]}...'"
                 )
 
         # CRC is calculated on the potentially (un)corrupted message
@@ -303,7 +306,8 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
         # Is this packet for me?
         if data_info["destination_nickname"] == config.nickname:
             print_log(
-                f"Data packet for me from {data_info['source_nickname']}: '{data_info['message'][:30]}...'"
+                f"Data packet for me from {data_info['source_nickname']}: "
+                f"'{data_info['message'][:30]}...'"
             )
 
             # Recalculate CRC on received message
@@ -311,7 +315,10 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
             new_status = STATUS_ACK if crc_ok else STATUS_NACK
 
             print_log(
-                f"CRC check: {'OK' if crc_ok else 'FAIL'}. Original CRC: {data_info['crc']}, Calculated on: '{data_info['message']}'. Sending {new_status}."
+                f"CRC check: {'OK' if crc_ok else 'FAIL'}. "
+                f"Original CRC: {data_info['crc']}, "
+                f"Calculated on: '{data_info['message']}'. "
+                f"Sending {new_status}."
             )
 
             # Send back to ring, changing status (and possibly other fields if needed)
@@ -332,7 +339,9 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
         # Is this a broadcast packet?
         elif data_info["destination_nickname"] == BROADCAST_NICKNAME:
             print_log(
-                f"Broadcast packet from {data_info['source_nickname']} for {data_info['destination_nickname']}: '{data_info['message'][:30]}...'"
+                f"Broadcast packet from {data_info['source_nickname']} "
+                f"for {data_info['destination_nickname']}: "
+                f"'{data_info['message'][:30]}...'"
             )
             # Process broadcast (e.g., display it)
             # Then forward it unchanged
@@ -342,16 +351,19 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
         # Is this packet originated by me and returning?
         elif data_info["source_nickname"] == config.nickname:
             print_log(
-                f"My data packet returned. Status: {data_info['status']}, Msg: '{data_info['message'][:30]}...'"
+                f"My data packet returned. Status: {data_info['status']}, "
+                f"Msg: '{data_info['message'][:30]}...'"
             )
 
             if not last_sent_message_details:
                 print_log(
-                    "Warning: Received a self-originated packet, but no details of last sent message. Ignoring."
+                    "Warning: Received a self-originated packet, but no details of "
+                    "last sent message. Ignoring."
                 )
-                # This implies the token should probably be passed if we have it, as this packet isn't one we're "waiting" on.
-                # However, if has_token is set, it implies we *are* waiting. This state shouldn't occur.
-                # For now, if it's our packet and we have the token, assume it's the one we sent.
+                # This implies the token should probably be passed if we have it, as this packet
+                # isn't one we're "waiting" on. However, if has_token is set, it implies we *are*
+                # waiting. This state shouldn't occur.For now, if it's our packet and we have
+                # the token, assume it's the one we sent.
                 if has_token.is_set():
                     forward_token()
                 return
@@ -367,7 +379,8 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
                 # As per clarification: source logs and discards its own returned broadcast.
                 # The status would be 'naoexiste'.
                 print_log(
-                    f"My broadcast message to {BROADCAST_NICKNAME} completed its round. Original content: '{original_msg[:30]}...'"
+                    f"My broadcast message to {BROADCAST_NICKNAME} completed its round. "
+                    f"Original content: '{original_msg[:30]}...'"
                 )
                 # Message is implicitly removed from queue as it was popped when sent.
                 # Now pass the token.
@@ -375,7 +388,8 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
                     forward_token()
                 else:
                     print_log(
-                        "Warning: My broadcast packet returned, but I don't have the token to pass."
+                        "Warning: My broadcast packet returned, but I don't have the "
+                        "token to pass."
                     )
                 return
 
@@ -388,7 +402,8 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
 
             elif data_info["status"] == STATUS_NAOEXISTE:
                 print_log(
-                    f"Message to {original_dest} returned 'naoexiste' (destination not found/off): '{original_msg[:30]}...'"
+                    f"Message to {original_dest} returned 'naoexiste' (destination not "
+                    f"found/off): '{original_msg[:30]}...'"
                 )
                 # Message is removed from queue (already popped when sent)
 
@@ -406,7 +421,8 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
 
             else:  # Unknown status
                 print_log(
-                    f"My data packet returned with unknown status '{data_info['status']}'. Treating as failed."
+                    f"My data packet returned with unknown status '{data_info['status']}'. "
+                    "Treating as failed."
                 )
 
             # In all cases of my unicast packet returning (ACK, NACK, NAOEXISTE), I pass the token.
@@ -416,13 +432,15 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
                 # This state (own packet returns but no token) should ideally not happen
                 # if a machine only sends data when it has the token and waits.
                 print_log(
-                    "Warning: My data packet returned, but I don't have the token. Cannot forward token now."
+                    "Warning: My data packet returned, but I don't have the token. "
+                    "Cannot forward token now."
                 )
 
         # Not for me, not broadcast, not mine returning -> just forward
         else:
             print_log(
-                f"Forwarding data packet from {data_info['source_nickname']} for {data_info['destination_nickname']}: '{packet_str[:100]}...'"
+                f"Forwarding data packet from {data_info['source_nickname']} for "
+                f"{data_info['destination_nickname']}: '{packet_str[:100]}...'"
             )
             send_packet(packet_str, config.right_neighbor_ip, config.right_neighbor_port)
     else:
@@ -493,8 +511,9 @@ def load_config(filepath="config.txt") -> Config | None:
 
             # For simplicity, assume listen port is same as destination port of others in the ring
             # This means all nodes listen on the same port.
-            # This information isn't directly in the config file per se, but is implied by the ring structure.
-            # We can make it explicit or derive. If Node A sends to Node B on port X, Node B must listen on X.
+            # This information isn't directly in the config file per se, but is implied by the
+            # ring structure. We can make it explicit or derive. If Node A sends to Node B on
+            # port X, Node B must listen on X.
             # Let's assume the port specified in the *destination* line is the common ring port.
             listen_port = dest_port
 
@@ -524,7 +543,9 @@ def main():
     config = local_config  # Set the global config
 
     print_log(
-        f"Configuration loaded: Neighbor={config.right_neighbor_ip}:{config.right_neighbor_port}, Nick={config.nickname}, HoldTime={config.token_hold_time}s, Generator={config.is_generator}, Listening on Port={config.listen_port}"
+        f"Configuration loaded: Neighbor={config.right_neighbor_ip}:{config.right_neighbor_port}, "
+        f"Nick={config.nickname}, HoldTime={config.token_hold_time}s, "
+        f"Generator={config.is_generator}, Listening on Port={config.listen_port}"
     )
 
     # Start the listener thread
@@ -541,7 +562,8 @@ def main():
     print_log("Application started. Type 'send <dest_nick> <message>' or 'quit'.")
     if config.is_generator:
         print_log(
-            "Generator commands: 'gentoken' (manual generate), 'stoptoken' (debug clear local token)."
+            "Generator commands: 'gentoken' (manual generate), 'stoptoken' "
+            "(debug clear local token)."
         )
 
     # Main loop for user input
