@@ -1,4 +1,5 @@
-127.0.0.1:6001
-Alice
-1
-true 
+6001 <my_listen_port>
+127.0.0.1:6001 <token_destination_ip>:<token_destination_port>
+Alice <current_machine_nickname>
+1 <token_time_seconds>
+true <is_token_generator_true_or_false>
