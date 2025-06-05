@@ -15,7 +15,7 @@ STATUS_ACK = "ACK"
 STATUS_NACK = "NACK"
 MESSAGE_QUEUE_MAX_SIZE = 10
 CRC_ERROR_PLACEHOLDER = "-1"  # Value to indicate CRC calculation failure due to encoding
-DEBUG_VERBOSE_LOGGING = False  # NEW: Flag for verbose logging control
+DEBUG_VERBOSE_LOGGING = True  # NEW: Flag for verbose logging control - enabled to show forwarding
 
 
 # --- Configuration ---
@@ -232,11 +232,20 @@ def receive_token(is_regenerated=False):
         current_status = STATUS_NAOEXISTE
         message_to_send_after_fault_injection = msg_content
 
+        # Calculate CRC on the ORIGINAL message first (before corruption)
+        crc = calculate_crc32(msg_content)
+
         # Fault Injection: Changed to be more robust against creating invalid UTF-8 sequences
         # The goal is for CRC to fail, not for encoding/decoding to fail.
-        if (
-            random.random() < 0.1
-        ):  # 10% chance of fault (user had 0.9, reverting to lower for typical testing)
+        # Check if manual fault injection is requested for this message
+        should_inject_fault = getattr(config, "inject_fault_next", False)
+        if should_inject_fault:
+            config.inject_fault_next = False  # Reset the flag
+            print_log("Manual fault injection requested for this message.")
+        elif random.random() < 0.1:  # 10% chance of automatic fault injection
+            should_inject_fault = True
+
+        if should_inject_fault:
             if dest_nick == BROADCAST_NICKNAME:
                 print_log(
                     "Fault Injection: Ensuring 'naoexiste' for broadcast (no data change for this type of fault)."
@@ -260,7 +269,8 @@ def receive_token(is_regenerated=False):
                             f"Fault Injection: Message for {dest_nick} is empty, no data corruption applied."
                         )
 
-        crc = calculate_crc32(message_to_send_after_fault_injection)
+        # NOTE: CRC is calculated on original message, but we send the (possibly corrupted) message
+        # This ensures that fault injection actually creates detectable CRC mismatches
         # If CRC calculation failed (e.g. encoding error despite simpler fault injection try)
         # we must still send *something* for CRC. The assignment implies CRC is always present.
         # Send the placeholder if calculate_crc32 returned it.
@@ -310,40 +320,8 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
         is_src_me = data_info["source_nickname"] == config.nickname
         is_broadcast = data_info["destination_nickname"] == BROADCAST_NICKNAME
 
-        if is_dest_me or (is_broadcast and not is_src_me):
-            if is_broadcast:
-                print_log(
-                    f"Broadcast packet from {data_info['source_nickname']} for {data_info['destination_nickname']}: '{data_info['message'][:30]}...'"
-                )
-                if DEBUG_VERBOSE_LOGGING:
-                    print_log(f"Forwarding broadcast packet: '{packet_str[:100]}...'")
-                send_packet(packet_str, config.right_neighbor_ip, config.right_neighbor_port)
-                return
-            else:
-                print_log(
-                    f"Data packet for me from {data_info['source_nickname']}: "
-                    f"'{data_info['message'][:30]}...'"
-                )
-                crc_ok = verify_crc32(data_info["message"], data_info["crc"])
-                new_status = STATUS_ACK if crc_ok else STATUS_NACK
-                print_log(
-                    f"CRC check: {'OK' if crc_ok else 'FAIL'}. "
-                    # f"Original CRC: {data_info['crc']}, " # Reduced verbosity
-                    # f"Calculated on: '{data_info['message']}'. " # Reduced verbosity
-                    f"Sending {new_status}."
-                )
-                response_packet = create_data_packet(
-                    status=new_status,
-                    source_nickname=data_info["source_nickname"],
-                    destination_nickname=data_info["destination_nickname"],
-                    message=data_info["message"],
-                    crc_val=data_info["crc"],
-                )
-                if DEBUG_VERBOSE_LOGGING:
-                    print_log(f"Sending data packet response: '{response_packet[:100]}...'")
-                send_packet(response_packet, config.right_neighbor_ip, config.right_neighbor_port)
-
-        elif is_src_me:
+        # Handle self-originated packets first to avoid infinite loops
+        if is_src_me:
             print_log(f"My data packet returned. Status from ring: {data_info['status']}")
 
             if not last_sent_message_details:
@@ -397,6 +375,39 @@ def process_incoming_packet(packet_str: str, sender_address: tuple):
                 forward_token()
             else:
                 print_log("Warning: My data packet returned, but I don't have the token.")
+
+        elif is_dest_me or (is_broadcast and not is_src_me):
+            if is_broadcast:
+                print_log(
+                    f"Broadcast packet from {data_info['source_nickname']} for {data_info['destination_nickname']}: '{data_info['message'][:30]}...'"
+                )
+                if DEBUG_VERBOSE_LOGGING:
+                    print_log(f"Forwarding broadcast packet: '{packet_str[:100]}...'")
+                send_packet(packet_str, config.right_neighbor_ip, config.right_neighbor_port)
+                return
+            else:
+                print_log(
+                    f"Data packet for me from {data_info['source_nickname']}: "
+                    f"'{data_info['message'][:30]}...'"
+                )
+                crc_ok = verify_crc32(data_info["message"], data_info["crc"])
+                new_status = STATUS_ACK if crc_ok else STATUS_NACK
+                print_log(
+                    f"CRC check: {'OK' if crc_ok else 'FAIL'}. "
+                    # f"Original CRC: {data_info['crc']}, " # Reduced verbosity
+                    # f"Calculated on: '{data_info['message']}'. " # Reduced verbosity
+                    f"Sending {new_status}."
+                )
+                response_packet = create_data_packet(
+                    status=new_status,
+                    source_nickname=data_info["source_nickname"],
+                    destination_nickname=data_info["destination_nickname"],
+                    message=data_info["message"],
+                    crc_val=data_info["crc"],
+                )
+                if DEBUG_VERBOSE_LOGGING:
+                    print_log(f"Sending data packet response: '{response_packet[:100]}...'")
+                send_packet(response_packet, config.right_neighbor_ip, config.right_neighbor_port)
 
         elif not is_dest_me and not is_src_me and not is_broadcast:
             if DEBUG_VERBOSE_LOGGING:
@@ -452,20 +463,21 @@ def load_config(filepath="config.txt") -> Config | None:
     try:
         with open(filepath, "r") as f:
             lines = [line.strip() for line in f.readlines() if line.strip()]
-            if len(lines) != 5:
-                print(f"Error: Config file '{filepath}' must have 5 lines. Found {len(lines)}.")
+            if len(lines) != 4:
+                print(
+                    f"Error: Config file '{filepath}' must have 4 lines as per assignment spec. Found {len(lines)}."
+                )
+                print("Expected format:")
+                print("  <token_destination_ip>:port")
+                print("  <current_machine_nickname>")
+                print("  <token_time>")
+                print("  <token_generator_true_or_false>")
                 return None
 
-            my_listen_port_str = lines[0]
-            dest_full_address = lines[1]
-            nickname = lines[2]
-            token_time_str = lines[3]
-            is_gen_str = lines[4].strip().lower()
-
-            if not my_listen_port_str.isdigit():
-                print(f"Error: My listen port '{my_listen_port_str}' must be a number.")
-                return None
-            my_listen_port_val = int(my_listen_port_str)
+            dest_full_address = lines[0]
+            nickname = lines[1]
+            token_time_str = lines[2]
+            is_gen_str = lines[3].strip().lower()
 
             if ":" not in dest_full_address:
                 print(
@@ -489,7 +501,8 @@ def load_config(filepath="config.txt") -> Config | None:
                 return None
             is_gen = is_gen_str == "true"
 
-            listen_port = my_listen_port_val
+            # Since assignment doesn't specify listen port, we need to get it from command line
+            listen_port = None  # Will be set by command line argument
 
             return Config(dest_ip, dest_port, nickname, token_time, is_gen, listen_port)
 
@@ -508,7 +521,7 @@ listener_thread_obj = None
 
 
 def main():
-    global config, listener_thread_obj
+    global config, listener_thread_obj, DEBUG_VERBOSE_LOGGING
 
     parser = argparse.ArgumentParser(description="Token Ring Node Simulator")
     parser.add_argument(
@@ -517,14 +530,24 @@ def main():
         default="config.txt",
         help="Path to the configuration file (default: config.txt)",
     )
+    parser.add_argument(
+        "--port",
+        type=int,
+        required=True,
+        help="Port number for this node to listen on",
+    )
     args = parser.parse_args()
     config_file_path = args.config
+    listen_port = args.port
 
     print(f"Attempting to load configuration from: {config_file_path}")
     local_config = load_config(config_file_path)
     if not local_config:
         print("Exiting due to configuration errors.")
         return
+
+    # Set the listen port from command line argument
+    local_config.listen_port = listen_port
     config = local_config
 
     print_log(
@@ -540,7 +563,15 @@ def main():
         time.sleep(1)
         receive_token(is_regenerated=True)
 
-    print_log("App started. CLI: 'send <nick> <msg>', 'queue', 'gentoken', 'token', 'quit'.")
+    print_log("App started. CLI Commands:")
+    print_log("  send <nick> <msg> - Send message to nickname")
+    print_log("  queue - Show message queue")
+    print_log("  token - Show token status")
+    print_log("  status - Show detailed node status")
+    print_log("  faultmode on|off - Enable/disable fault injection for next message")
+    print_log("  verbose on|off - Control verbose logging")
+    print_log("  gentoken - Generate new token")
+    print_log("  quit - Exit")
     # if config.is_generator: # Removed to allow gentoken from any node later
     #     print_log("Generator commands: 'stoptoken' (debug clear local token).")
 
@@ -590,6 +621,16 @@ def main():
                     )
             elif command == "token":
                 print_log(f"Holds token: {has_token.is_set()}")
+            elif command == "faultmode":
+                if len(parts) == 2 and parts[1].lower() in ["on", "off"]:
+                    if parts[1].lower() == "on":
+                        config.inject_fault_next = True
+                        print_log("Fault injection enabled for NEXT message only.")
+                    else:
+                        config.inject_fault_next = False
+                        print_log("Manual fault injection disabled.")
+                else:
+                    print_log("Usage: faultmode on|off")
             # MODIFIED: gentoken can be called by any node
             elif command == "gentoken":
                 print_log("User command: Manually generating a new token.")
@@ -597,6 +638,28 @@ def main():
                 # and then try to send a message or forward the token.
                 # The existing duplicate detection in receive_token() will help if multiple tokens appear.
                 receive_token(is_regenerated=True)
+            elif command == "status":
+                print_log("=== NODE STATUS ===")
+                print_log(f"Nickname: {config.nickname}")
+                print_log(f"Listen Port: {config.listen_port}")
+                print_log(
+                    f"Right Neighbor: {config.right_neighbor_ip}:{config.right_neighbor_port}"
+                )
+                print_log(f"Token Generator: {config.is_generator}")
+                print_log(f"Has Token: {has_token.is_set()}")
+                print_log(f"Queue Size: {len(message_queue)}/{MESSAGE_QUEUE_MAX_SIZE}")
+                print_log(f"Fault Injection (next): {getattr(config, 'inject_fault_next', False)}")
+                if last_sent_message_details:
+                    print_log("Last sent message: Waiting for response")
+                else:
+                    print_log("Last sent message: None pending")
+            elif command == "verbose":
+                if len(parts) == 2 and parts[1].lower() in ["on", "off"]:
+                    DEBUG_VERBOSE_LOGGING = parts[1].lower() == "on"
+                    print_log(f"Verbose logging: {'ON' if DEBUG_VERBOSE_LOGGING else 'OFF'}")
+                else:
+                    print_log(f"Verbose logging: {'ON' if DEBUG_VERBOSE_LOGGING else 'OFF'}")
+                    print_log("Usage: verbose on|off")
             elif (
                 command == "stoptoken" and config.is_generator
             ):  # stoptoken remains for original generator for debug
